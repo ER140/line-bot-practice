@@ -38,8 +38,9 @@ def get_densuke_data(url):
     
     dates_text = soup.find_all('th', class_='list_th_item')
     today = datetime.date.today()
-    # 金〜日の直近予定を探す
-    target_dates = [today, today + datetime.timedelta(days=1), today + datetime.timedelta(days=2)]
+ # テスト用に7日後まで探すように変更
+    target_dates = [today + datetime.timedelta(days=i) for i in range(8)]
+
     
     found_event = None
     target_date_str = ""
