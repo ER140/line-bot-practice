@@ -1,54 +1,87 @@
 import os
 import requests
 from bs4 import BeautifulSoup
+import datetime
+import re
 
-def get_densuke_schedule():
-    # 伝助のURL（あなたの伝助のURLに書き換えてください）
-    url = 'https://densuke.biz/list?cd=BHZuqY9FKUTWu5h7' 
-    
-    response = requests.get(url)
-    response.encoding = 'utf-8'
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    # スケジュール部分の解析（サイトの構造に合わせて調整済み）
-    rows = soup.find_all('tr')
-    schedule_text = "--- 練習予定お知らせ ---\n"
-    found = False
+# 会場設定
+VENUE_CONFIG = {
+    "四": {"name": "四之宮ふれあいセンター 大会議室", "note": "入館の際は「OSGです」。四之宮では「大磯吹奏楽団」の名称は出さないこと。"},
+    "ひ": {"name": "ひらしん平塚文化芸術ホール 大練習室", "note": ""},
+    "ラ": {"name": "ラディアン マルチルーム1", "note": ""}
+}
 
-    for row in rows:
-        cells = row.find_all('td')
-        if len(cells) >= 2:
-            date = cells[0].get_text(strip=True)
-            status = cells[1].get_text(strip=True)
-            # 「〇」や特定のキーワードがある場合のみ抽出
-            if "○" in status or "17:00" in date: 
-                schedule_text += f"📅 {date}\n"
-                found = True
-    
-    if not found:
-        return "直近の確定した練習予定は見つかりませんでした。"
-    
-    return schedule_text
+DENSUKE_URL = "https://densuke.biz/list?cd=BHZuqY9FKUTWu5h7"
 
-def send_line_message(message):
-    token = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
-    group_id = os.getenv('LINE_GROUP_ID')
+def get_densuke_data(url):
+    print(f"--- 伝助の解析開始 ---")
+    res = requests.get(url)
+    res.encoding = res.apparent_encoding
+    soup = BeautifulSoup(res.text, 'html.parser')
     
-    url = 'https://api.line.me/v2/bot/message/push'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {token}'
-    }
-    data = {
-        'to': group_id,
-        'messages': [{'type': 'text', 'text': message}]
-    }
+    cells = soup.find_all(['th', 'td'])
+    today = datetime.date.today()
+    target_dates = [today + datetime.timedelta(days=i) for i in range(14)]
     
-    res = requests.post(url, headers=headers, json=data)
-    print(f"LINE応答ステータス: {res.status_code}")
+    found_event_text = None
+    target_date_obj = None
 
-if __name__ == "__main__":
-    # 1. 伝助から情報を取得
-    practice_info = get_densuke_schedule()
-    # 2. LINEに送信
-    send_line_message(practice_info)
+    for cell in cells:
+        text = cell.get_text().strip()
+        clean_text = text.replace(" ", "").replace("　", "")
+        for target in target_dates:
+            m, d = target.month, target.day
+            patterns = [f"{m}/{d}", f"{m}/{d:02}", f"{m}月{d}日"]
+            if any(p in clean_text for p in patterns):
+                if any(k in clean_text for k in VENUE_CONFIG.keys()):
+                    print(f"💡 予定を発見: {text}")
+                    found_event_text = text
+                    target_date_obj = target
+                    break
+        if found_event_text: break
+    
+    if not found_event_text:
+        print("❌ 該当する練習予定が見つかりませんでした。")
+        return None, None, None
+
+    # --- 備考欄（コメント）の取得 ---
+    comment_area = soup.find('div', id='comment') or soup.find('div', class_='comment') or soup.find('td', class_='comment')
+    description = comment_area.get_text() if comment_area else soup.get_text()
+
+    header_date = f"{target_date_obj.month}/{target_date_obj.day}"
+    
+    # 柔軟な正規表現で「●3/7の合奏予定」から次の「●」か「#」までを抽出
+    search_pattern = rf"●\s?{target_date_obj.month}\s?/\s?{target_date_obj.day}\s?の合奏予定"
+    match = re.search(rf"({search_pattern}.*?)(?=\n●|\n#|$)", description, re.DOTALL)
+    
+    if match:
+        gaso_plan = match.group(1).strip()
+    else:
+        # ご指定のメッセージに変更
+        print(f"⚠️ 備考欄に '{header_date}' の合奏予定見出しが見つかりませんでした。")
+        gaso_plan = "合奏情報が抽出できませんでした"
+
+    return found_event_text, gaso_plan, header_date
+
+def send_to_line(message):
+    token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+    group_id = os.environ.get("LINE_GROUP_ID")
+    
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    payload = {"to": group_id, "messages": [{"type": "text", "text": message}]}
+    response = requests.post(url, headers=headers, json=payload)
+    print(f"LINE応答ステータス: {response.status_code}")
+
+# 実行
+event_text, gaso_plan, date = get_densuke_data(DENSUKE_URL)
+
+if event_text:
+    m = re.search(r'([四ひラ])', event_text)
+    if m:
+        v = VENUE_CONFIG[m.group(1)]
+        msg = f"📢 次回練習のお知らせ\n\n📅 日付：{date}\n📍 場所：{v['name']}\n\n🎼 {gaso_plan}"
+        if v['note']:
+            msg += f"\n\n⚠️ 備考：\n{v['note']}"
+        
+        send_to_line(msg)
