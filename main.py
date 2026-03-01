@@ -18,20 +18,26 @@ def get_densuke_data(url):
     res.encoding = res.apparent_encoding
     soup = BeautifulSoup(res.text, 'html.parser')
     
+    # 伝助の表の見出し（日付部分）をすべて取得
     dates_text = soup.find_all('th', class_='list_th_item')
     today = datetime.date.today()
     
-    # 今後14日間を探す
+    # 今後14日間を検索対象にする
     target_dates = [today + datetime.timedelta(days=i) for i in range(14)]
     
     found_event = None
     target_date_obj = None
+
     for item in dates_text:
         text = item.get_text().strip()
         for target in target_dates:
-            # 伝助の「3月07日」形式を作成
-            date_str_densuke = f"{target.month}月{target.day:02}日"
-            if date_str_densuke in text:
+            # 「3」と「7」が両方含まれているかチェック（月/日 形式）
+            # これなら「3/7」でも「3月7日」でも「3月07日」でもヒットします
+            month_str = str(target.month)
+            day_str = str(target.day)
+            
+            # 月と日がテキスト内に存在するか確認
+            if month_str in text and day_str in text:
                 print(f"💡 伝助の中に予定を発見: {text}")
                 found_event = text
                 target_date_obj = target
@@ -39,11 +45,12 @@ def get_densuke_data(url):
         if found_event: break
     
     if not found_event:
-        print("❌ 該当する日付の予定が見つかりませんでした。")
+        print("❌ 該当する日付の予定が伝助の表に見当たりませんでした。")
+        # デバッグ用：今伝助にある文字を表示
+        print(f"伝助にあった文字の例: {[d.get_text().strip() for d in dates_text[:5]]}")
         return None, None, None
 
     description = soup.find('div', id='comment').get_text()
-    # 備考欄の見出し（●3/7の合奏予定）を探す
     header_date = f"{target_date_obj.month}/{target_date_obj.day}"
     target_header = f"●{header_date}の合奏予定"
     
@@ -51,7 +58,7 @@ def get_densuke_data(url):
         gaso_match = re.search(rf'{re.escape(target_header)}.*?(?=\n●|\n#|$)', description, re.DOTALL)
         gaso_plan = gaso_match.group(0).strip()
     else:
-        print(f"⚠️ {target_header} が備考欄にありません。")
+        print(f"⚠️ 備考欄に '{target_header}' が見つかりませんでした。")
         gaso_plan = "備考欄に詳細がありませんでした。"
 
     return found_event, gaso_plan, header_date
@@ -64,6 +71,8 @@ def send_to_line(message):
     payload = {"to": group_id, "messages": [{"type": "text", "text": message}]}
     response = requests.post(url, headers=headers, json=payload)
     print(f"LINE応答ステータス: {response.status_code}")
+    if response.status_code != 200:
+        print(f"LINEエラー内容: {response.text}")
 
 # 実行
 event_text, gaso_plan, date = get_densuke_data(DENSUKE_URL)
@@ -74,3 +83,5 @@ if event_text:
         v = VENUE_CONFIG[m.group(1)]
         msg = f"📢 次回練習のお知らせ\n\n日付：{date}\n場所：{v['name']}\n合奏予定：\n{gaso_plan}"
         send_to_line(msg)
+    else:
+        print(f"❌ 予定名 '{event_text}' に会場記号[四, ひ, ラ]がありません。")
